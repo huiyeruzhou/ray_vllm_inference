@@ -11,17 +11,15 @@ from starlette.responses import StreamingResponse, Response, JSONResponse
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.sampling_params import SamplingParams
 from vllm.engine.async_llm_engine import AsyncLLMEngine
-from ray_vllm_inference.prompt_format import Message
-from ray_vllm_inference.model_config import load_model_config
 from ray_vllm_inference.protocol import GenerateRequest, GenerateResponse
-
+from omegaconf import DictConfig
 logger = logging.getLogger("ray.serve")
 
 app = FastAPI()
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    return create_error_response(HTTPStatus.BAD_REQUEST, 'Error parsing JSON payload')
+    return create_error_response(HTTPStatus.BAD_REQUEST, f'Error parsing JSON payload: {exc}')
 
 def create_error_response(status_code: HTTPStatus,
                           message: str) -> JSONResponse:
@@ -29,11 +27,11 @@ def create_error_response(status_code: HTTPStatus,
 
 @serve.deployment(name='VLLMInference', 
                   num_replicas=1, 
-                  max_concurrent_queries=10,
+                  max_ongoing_requests=256,
                   ray_actor_options={"num_gpus": 1.0})
 @serve.ingress(app)
 class VLLMGenerateDeployment:
-    def __init__(self, **kwargs):
+    def __init__(self, config: DictConfig):
         """
         Construct a VLLM deployment.
 
@@ -72,18 +70,13 @@ class VLLMGenerateDeployment:
                 process as the server process.
             disable_log_requests: disable logging requests.
         """
-        args = AsyncEngineArgs(**kwargs)
+        args = AsyncEngineArgs(**config.vllm)
         logger.info(args)
         self.engine = AsyncLLMEngine.from_engine_args(args)
         engine_model_config = self.engine.engine.get_model_config()
-        self.tokenizer = self.engine.engine.tokenizer
-        self.max_model_len = kwargs.get('max_model_len', engine_model_config.max_model_len)
+        self.tokenizer = self.engine.engine.get_tokenizer()
+        self.max_model_len = config.vllm.get('max_model_len', engine_model_config.max_model_len)
 
-        try:
-            self.model_config = load_model_config(args.model)
-        except FileNotFoundError:
-            logger.warn(f"No model config for: {args.model}")
-            self.model_config = None
 
     def _next_request_id(self):
         return str(uuid.uuid1().hex)
@@ -104,16 +97,21 @@ class VLLMGenerateDeployment:
         return input_ids
 
     async def _stream_results(self, output_generator) -> AsyncGenerator[bytes, None]:
-        num_returned = 0
+        num_returned_texts = []
+        num_returned_tokens = []
         async for request_output in output_generator:
-            output = request_output.outputs[0]
-            text_output = output.text[num_returned:]
-            response = GenerateResponse(output=text_output, 
-                             prompt_tokens=len(request_output.prompt_token_ids), 
-                             output_tokens=1, 
-                             finish_reason=output.finish_reason)
-            yield (response.json() + "\n").encode("utf-8")
-            num_returned += len(text_output)
+            outputs = request_output.outputs
+            if not num_returned_texts:
+                num_returned_texts = [0] * len(outputs)
+                num_returned_tokens = [0] * len(outputs)
+            response = GenerateResponse(texts=[output.text[num_returned_texts[i]:] for i, output in enumerate(outputs)],
+                                        prompt_tokens=len(request_output.prompt_token_ids),
+                                        output_tokens=[len(output.token_ids) - num_returned_tokens[i] for i, output in enumerate(outputs)],
+                                        finish_reason=[output.finish_reason for output in outputs])
+            yield (response.model_dump_json() + "\n").encode("utf-8")
+            for i, output in enumerate(outputs):
+                num_returned_texts[i] = len(output.text)
+                num_returned_tokens[i] = len(output.token_ids)
 
     async def _abort_request(self, request_id) -> None:
         await self.engine.abort(request_id)
@@ -139,24 +137,39 @@ class VLLMGenerateDeployment:
                 return create_error_response(HTTPStatus.BAD_REQUEST, "Missing parameter 'prompt' or 'messages'")
 
             if request.prompt:
-                 prompt = request.prompt
+                prompt = request.prompt
             else:
-                if self.model_config:
-                    prompt = self.model_config.prompt_format.generate_prompt(request.messages)
-                else:
-                    return create_error_response(HTTPStatus.BAD_REQUEST, 'Parameter "messages" requires a model config')
+                prompt = self.tokenizer.apply_chat_template(request.messages,
+                                                            add_generation_prompt=True,
+                                                            tokenize=False)
 
-            prompt_token_ids = self._check_length(prompt, request)
+            # prompt_token_ids = self._check_length(prompt, request)
 
-            request_dict = request.dict(exclude=set(['prompt', 'messages', 'stream']))
+            request_dict = request.model_dump(exclude=set(['prompt', 'messages', 'stream']))
 
             sampling_params = SamplingParams(**request_dict)
+            def parse_stop(self, stop):
+                if isinstance(stop, str):
+                    stop = [stop]
+                if "<|EOS_TOKEN|>" in stop:
+                    eos_id = self.tokenizer.eos_token_id
+                    stop.remove("<|EOS_TOKEN|>")
+                    if isinstance(eos_id, int):
+                        stop.append(self.tokenizer.decode(eos_id))
+                    elif isinstance(eos_id, list):
+                        stop.extend([self.tokenizer.decode(e) for e in eos_id])
+                    else:
+                        raise ValueError(f"Invalid eos_id type: {type(eos_id)}")
+                return stop
+            if sampling_params.stop:
+                sampling_params.stop = parse_stop(self, sampling_params.stop)
+            
             request_id = self._next_request_id()
 
-            output_generator = self.engine.generate(prompt=None,
+            output_generator = self.engine.generate(inputs=prompt,
                                                     sampling_params=sampling_params, 
                                                     request_id=request_id, 
-                                                    prompt_token_ids=prompt_token_ids)
+                                                    )
             if request.stream:
                 background_tasks = BackgroundTasks()
                 # Abort the request processing in the engine if the socket connection drops
@@ -172,11 +185,11 @@ class VLLMGenerateDeployment:
                         return Response(status_code=200)
                     final_output = request_output
 
-                text_outputs = final_output.outputs[0].text
+                texts = [out.text for out in final_output.outputs]
                 prompt_tokens = len(final_output.prompt_token_ids)
-                output_tokens = len(final_output.outputs[0].token_ids)
-                finish_reason = final_output.outputs[0].finish_reason
-                return GenerateResponse(output=text_outputs, prompt_tokens=prompt_tokens, 
+                output_tokens = [len(out.token_ids) for out in final_output.outputs]
+                finish_reason = [out.finish_reason for out in final_output.outputs]
+                return GenerateResponse(texts=texts, prompt_tokens=prompt_tokens, 
                                         output_tokens=output_tokens, finish_reason=finish_reason)
 
         except ValueError as e:
@@ -186,4 +199,9 @@ class VLLMGenerateDeployment:
             raise HTTPException(HTTPStatus.INTERNAL_SERVER_ERROR, 'Server error')
 
 def deployment(args: Dict[str, str]) -> Application:
-    return VLLMGenerateDeployment.bind(**args)
+    yaml = args.get('config', 'conf/infer_server.yaml')
+    import omegaconf
+    config = omegaconf.OmegaConf.load(yaml)
+    return VLLMGenerateDeployment.bind(config)
+
+APP = deployment({})

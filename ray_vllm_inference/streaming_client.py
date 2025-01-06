@@ -6,6 +6,7 @@ import time
 import argparse
 import requests
 import json
+from ray_vllm_inference.protocol import GenerateResponse
 
 logger = logging.getLogger()
 
@@ -33,21 +34,25 @@ def main(host:str, port:int, stream:bool, user_message:str, max_tokens:int,
                 ], 
                "stream": stream, 
                "max_tokens": max_tokens, 
-               "temperature": temperature
+               "temperature": temperature,
+               "n": 2,
             }
 
     if stream:
         response = requests.post(url, headers=headers, json=payload, stream=True)
         if response.status_code == 200:
-            with os.fdopen(sys.stdout.fileno(), "wb", closefd=False) as stdout:
+            with os.fdopen(sys.stdout.fileno(), "wb") as outfile, open("output.txt", "wb") as outfile2:
+                outstreams = [outfile, outfile2]
                 start = time.perf_counter()
                 num_tokens = 0
                 for line in response.iter_lines():
                     #print(line.decode("utf-8")) # raw JSON response
-                    text = json.loads(line.decode("utf-8"))['output']
-                    stdout.write(text.encode("utf-8"))
-                    stdout.flush()
-                    num_tokens += 1
+                    # text = json.loads(line.decode("utf-8"))['output']
+                    rsp = GenerateResponse.model_validate_json(line.decode("utf-8"))
+                    for text, outstream in zip(rsp.texts, outstreams):
+                        outstream.write(text.encode("utf-8"))
+                        outstream.flush()
+                    num_tokens += sum(rsp.output_tokens)
                 duration_s = time.perf_counter() - start
                 print(f"\n{num_tokens / duration_s:.2f} token/s")
 

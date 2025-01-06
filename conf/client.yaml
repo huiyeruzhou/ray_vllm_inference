@@ -1,0 +1,12 @@
+http:
+  url: "http://127.0.0.1:8000" # default url of ray serve
+  read_timeout: 1800 # maximum time in seconds to wait for a response
+  max_connections: 2068 # performance optimization parameter, should be num_workers * batch_size + keepalive_connections
+  max_keepalive_connections: 20 # connections used for HTTP keepalive
+  keepalive_expiry: 60 # how long to maintain a keepalive connection, in seconds
+
+dataset:
+  tokenizer: ~ # path to your tokenizer
+  max_length: 1000
+  path: ~ # path to your dataset
+

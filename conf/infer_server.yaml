@@ -1,0 +1,21 @@
+name: qwen2_infer
+deployment_class: ray_vllm_inference.vllm_serve.VLLMGenerateDeployment # qualified name of the deployment class, <module>.<class>
+num_workers: 8
+vllm: # see vllm.engine.arg_utils.AsyncEngineArgs
+  model: ~ # path to your model
+  download_dir: "./models"
+  load_format: "auto"
+  dtype: "auto"
+  max_model_len: 16384
+  worker_use_ray: false
+  pipeline_parallel_size: 1
+  tensor_parallel_size: 1
+  block_size: 128
+  swap_space: 0.0
+  gpu_memory_utilization: 0.9
+  max_num_batched_tokens: 32768
+  max_num_seqs: 256
+  disable_log_stats: false
+  quantization: null
+  engine_use_ray: false
+  disable_log_requests: true
