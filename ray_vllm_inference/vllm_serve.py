@@ -165,11 +165,13 @@ class VLLMGenerateDeployment:
                 sampling_params.stop = parse_stop(self, sampling_params.stop)
             
             request_id = self._next_request_id()
-
+            
+            ## TODO: if we are using higher version of vllm, set output_kind for a better output_generator
+            # DELTA for stream, FINAL for non-stream
             output_generator = self.engine.generate(inputs=prompt,
-                                                    sampling_params=sampling_params, 
-                                                    request_id=request_id, 
-                                                    )
+                                    sampling_params=sampling_params, 
+                                    request_id=request_id, 
+                                    )
             if request.stream:
                 background_tasks = BackgroundTasks()
                 # Abort the request processing in the engine if the socket connection drops

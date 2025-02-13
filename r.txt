@@ -1,0 +1,6 @@
+fastapi==0.115.6
+starlette
+pydantic>2.0.0
+httpx==0.23.3
+hydra-core
+uvloop

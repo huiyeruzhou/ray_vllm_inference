@@ -1,8 +1,10 @@
 name: qwen2_infer
 deployment_class: ray_vllm_inference.vllm_serve.VLLMGenerateDeployment # qualified name of the deployment class, <module>.<class>
-num_workers: 8
+deployment:
+  max_ongoing_requests: 128
+num_workers: 16
 vllm: # see vllm.engine.arg_utils.AsyncEngineArgs
-  model: ~ # path to your model
+  model: "/mnt/bn/honglifish/model/Qwen2.5-7B-Instruct" # path to your model
   download_dir: "./models"
   load_format: "auto"
   dtype: "auto"

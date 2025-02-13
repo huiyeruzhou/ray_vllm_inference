@@ -4,9 +4,42 @@ http:
   max_connections: 2068 # performance optimization parameter, should be num_workers * batch_size + keepalive_connections
   max_keepalive_connections: 20 # connections used for HTTP keepalive
   keepalive_expiry: 60 # how long to maintain a keepalive connection, in seconds
+  method_params:
+    search:
+      "n": 3
+      "max_tokens": 512
+      "temperature": 1.0
+      "top_p": 0.7
+      "stop": ["\n\n", "<|EOS_TOKEN|>"]
+      "include_stop_str_in_output": True
+    rollout:
+      "n": 1
+      "max_tokens": 8192
+      "temperature": 1.0
+      "top_p": 0.7
+      "stop": ["<|EOS_TOKEN|>"]
+    reward:
+      "n": 1
+      "max_tokens": 256
+      "temperature": 0.4
+      "top_p": 1.0
+      "stop": ["<|EOS_TOKEN|>"]
+    cot_generate:
+      "n": 1
+      "max_tokens": 8192
+      "temperature": 1.0
+      "top_p": 0.7
+      "stop": ["<|EOS_TOKEN|>"]
+
 
 dataset:
   tokenizer: ~ # path to your tokenizer
   max_length: 1000
   path: ~ # path to your dataset
 
+
+method: 
+  name: tree_search
+  args:
+    depth: 5
+    beam: 3

@@ -34,7 +34,7 @@ def main(cfg):
     else:
         print(f"Deployment: {cfg.deployment_class}")
 
-    app : serve.Application = DeploymentClass.options(num_replicas=cfg.num_workers, ray_actor_options={"num_gpus": cfg.vllm.tensor_parallel_size}).bind(cfg)
+    app : serve.Application = DeploymentClass.options(num_replicas=cfg.num_workers, ray_actor_options={"num_gpus": cfg.vllm.tensor_parallel_size}, **cfg.deployment).bind(cfg)
     import signal
     def sigint_handler(signum, frame):
         print("User interrupted the program.")
